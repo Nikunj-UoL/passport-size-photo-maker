@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -43,6 +44,21 @@ st.set_page_config(
 )
 
 st.title("Passport Photo Grid Generator")
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    """Read a positive integer environment variable with a safe fallback."""
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+REMBG_TIMEOUT_SECONDS = _positive_env_int("REMBG_TIMEOUT_SECONDS", 45)
+MAX_UPLOAD_FILES = 10
+MAX_TOTAL_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_TOTAL_PHOTOS = 100
 
 
 def _default_editor_settings() -> dict[str, float | int | str]:
@@ -315,8 +331,20 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True,
 )
 
-current_keys = {file.name for file in uploaded_files} if uploaded_files else set()
+upload_selection_valid = True
+if uploaded_files and len(uploaded_files) > MAX_UPLOAD_FILES:
+    st.error(f"Upload at most {MAX_UPLOAD_FILES} photos in one batch.")
+    upload_selection_valid = False
+elif uploaded_files and sum(file.size for file in uploaded_files) > MAX_TOTAL_UPLOAD_BYTES:
+    st.error("The total upload size must not exceed 50 MB per batch.")
+    upload_selection_valid = False
+
 stored_keys = set(st.session_state.uploaded_file_data.keys())
+current_keys = (
+    {file.name for file in (uploaded_files or [])}
+    if upload_selection_valid
+    else stored_keys
+)
 
 for key in stored_keys - current_keys:
     st.session_state.uploaded_file_data.pop(key, None)
@@ -326,7 +354,7 @@ for key in stored_keys - current_keys:
     st.session_state.edited_crop_bytes.pop(key, None)
     st.session_state.editor_meta.pop(key, None)
 
-if uploaded_files:
+if upload_selection_valid and uploaded_files:
     for file in uploaded_files:
         if file.name not in st.session_state.uploaded_file_data:
             data = file.read()
@@ -401,6 +429,11 @@ else:
 
     total_photos = sum(int(qty) for qty in st.session_state.quantities.values())
     st.caption(f"Total photos requested: {total_photos}")
+    if total_photos > MAX_TOTAL_PHOTOS:
+        st.error(
+            f"Request at most {MAX_TOTAL_PHOTOS} photos per generation to keep "
+            "the hosted app responsive."
+        )
     if valid_preview_count == 0:
         st.warning("No readable previews were found in the current upload set.")
 
@@ -435,7 +468,13 @@ else:
 
 st.header("4. Generate Print Sheets")
 
-can_process = bool(st.session_state.uploaded_file_data)
+requested_photo_count = sum(
+    int(qty) for qty in st.session_state.quantities.values()
+)
+can_process = (
+    bool(st.session_state.uploaded_file_data)
+    and requested_photo_count <= MAX_TOTAL_PHOTOS
+)
 if st.button("Generate Print Sheets", type="primary", disabled=not can_process):
     progress_bar = st.progress(0.0, text="Initialising")
     status_text = st.empty()
@@ -444,6 +483,7 @@ if st.button("Generate Print Sheets", type="primary", disabled=not can_process):
     errors: list[str] = []
     warnings: list[str] = []
     file_items = list(st.session_state.uploaded_file_data.items())
+    rembg_available = True
 
     for index, (fname, data) in enumerate(file_items, start=1):
         person_name = st.session_state.names.get(fname, Path(fname).stem).strip()
@@ -471,11 +511,12 @@ if st.button("Generate Print Sheets", type="primary", disabled=not can_process):
             bg_result = remove_background_with_info(
                 pil_to_bgr(crop_pil),
                 background_color=bg_color,
-                prefer_rembg=True,
-                rembg_timeout_seconds=8,
+                prefer_rembg=rembg_available,
+                rembg_timeout_seconds=REMBG_TIMEOUT_SECONDS,
             )
             if bg_result.warning:
                 warnings.append(f"{person_name}: {bg_result.warning}")
+                rembg_available = False
             else:
                 warnings.append(f"{person_name}: background removed with {bg_result.method}")
 
@@ -533,42 +574,51 @@ if st.button("Generate Print Sheets", type="primary", disabled=not can_process):
     output_dir = tempfile.mkdtemp(prefix="passport_")
     output_paths: list[str] = []
 
-    for page_index, layout in enumerate(layouts, start=1):
-        canvas = render_page(layout)
-        path = os.path.join(output_dir, f"output_page_{page_index}.jpg")
-        save_page(canvas, path)
-        output_paths.append(path)
+    try:
+        for page_index, layout in enumerate(layouts, start=1):
+            canvas = render_page(layout)
+            path = os.path.join(output_dir, f"output_page_{page_index}.jpg")
+            save_page(canvas, path)
+            output_paths.append(path)
 
-    progress_bar.progress(1.0, text="Done")
-    status_text.empty()
+        progress_bar.progress(1.0, text="Done")
+        status_text.empty()
 
-    st.success(
-        f"Generated {len(output_paths)} page(s) with {len(processed_images)} photo(s)."
-    )
-
-    st.subheader("Preview")
-    preview_cols = st.columns(min(len(output_paths), 3))
-    for index, path in enumerate(output_paths, start=1):
-        with preview_cols[(index - 1) % len(preview_cols)]:
-            preview = Image.open(path)
-            preview.thumbnail((400, 600))
-            st.image(preview, caption=f"Page {index}")
-
-    st.subheader("Download")
-    if len(output_paths) == 1:
-        st.download_button(
-            label="Download Page 1 (JPEG)",
-            data=Path(output_paths[0]).read_bytes(),
-            file_name="passport_sheet.jpg",
-            mime="image/jpeg",
+        st.success(
+            f"Generated {len(output_paths)} page(s) with "
+            f"{len(processed_images)} photo(s)."
         )
-    else:
-        st.download_button(
-            label=f"Download All Pages (ZIP, {len(output_paths)} files)",
-            data=_build_zip(output_paths),
-            file_name="passport_sheets.zip",
-            mime="application/zip",
-        )
+
+        st.subheader("Preview")
+        preview_cols = st.columns(min(len(output_paths), 3))
+        for index, path in enumerate(output_paths, start=1):
+            with preview_cols[(index - 1) % len(preview_cols)]:
+                with Image.open(path) as preview_source:
+                    preview = preview_source.copy()
+                preview.thumbnail((400, 600))
+                st.image(preview, caption=f"Page {index}")
+
+        st.subheader("Download")
+        if len(output_paths) == 1:
+            download_data = Path(output_paths[0]).read_bytes()
+            st.download_button(
+                label="Download Page 1 (JPEG)",
+                data=download_data,
+                file_name="passport_sheet.jpg",
+                mime="image/jpeg",
+            )
+        else:
+            download_data = _build_zip(output_paths)
+            st.download_button(
+                label=f"Download All Pages (ZIP, {len(output_paths)} files)",
+                data=download_data,
+                file_name="passport_sheets.zip",
+                mime="application/zip",
+            )
+    finally:
+        # Download widgets retain the bytes. Always remove hosted temporary
+        # passport files, including when rendering or ZIP creation fails.
+        shutil.rmtree(output_dir, ignore_errors=True)
 
     if errors or warnings:
         with st.expander("Processing Details"):

@@ -25,6 +25,7 @@ from PIL import Image, ImageEnhance, ImageOps, UnidentifiedImageError
 # ---------------------------------------------------------------------------
 
 MM_TO_PX = 300.0 / 25.4
+MAX_INPUT_PIXELS = 40_000_000
 
 PAPER_SIZES: dict[str, tuple[int, int]] = {
     "A4 (210 x 297 mm)": (2480, 3508),
@@ -103,6 +104,16 @@ def load_upload_image(data: bytes) -> Image.Image:
     """Decode uploaded bytes into an EXIF-corrected RGB Pillow image."""
     try:
         image = Image.open(io.BytesIO(data))
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise ValueError("Could not decode image file.") from exc
+
+    if image.width * image.height > MAX_INPUT_PIXELS:
+        image.close()
+        raise ValueError(
+            "Image dimensions are too large. Use a photo under 40 megapixels."
+        )
+
+    try:
         image = ImageOps.exif_transpose(image)
         return image.convert("RGB")
     except (UnidentifiedImageError, OSError, ValueError) as exc:
@@ -768,8 +779,16 @@ from rembg import new_session, remove
 input_path = Path(sys.argv[1])
 output_path = Path(sys.argv[2])
 model_dir = Path(os.environ.get("U2NET_HOME", Path.home() / ".u2net"))
-portrait_model = model_dir / "u2net_human_seg.onnx"
-model_name = "u2net_human_seg" if portrait_model.exists() else "u2net"
+if os.environ.get("REMBG_MODEL"):
+    model_name = os.environ["REMBG_MODEL"]
+elif (model_dir / "u2net_human_seg.onnx").exists():
+    model_name = "u2net_human_seg"
+elif (model_dir / "u2net.onnx").exists():
+    model_name = "u2net"
+else:
+    # A fresh cloud instance downloads this compact model quickly enough for
+    # an interactive first request; users can override it with REMBG_MODEL.
+    model_name = "u2netp"
 
 image = Image.open(input_path).convert("RGB")
 session = new_session(model_name)

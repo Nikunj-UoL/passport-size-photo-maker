@@ -1,7 +1,7 @@
-streamlit>=1.40.0
+streamlit==1.58.0
 streamlit-cropper==0.3.1
-opencv-python-headless>=4.10.0
-mediapipe>=0.10.30
-rembg[cpu]>=2.0.76
-Pillow>=11.0.0
-numpy>=1.26.0
+opencv-python-headless==4.13.0.92
+mediapipe==0.10.35
+rembg[cpu]==2.0.76
+Pillow==12.2.0
+numpy==2.3.5
