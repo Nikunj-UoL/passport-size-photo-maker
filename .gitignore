@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.log
+*.err
+
+.venv/
+venv/
+env/
+.env
+
+output/
+.streamlit/secrets.toml
+
+.agents/
+.codex/
+.commandcode/
+
+# Local development instructions and handoff notes
+agents.md
+AGENTS.md
+handoff.md
+system_prompt.md
+
+.DS_Store
+Thumbs.db
