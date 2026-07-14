@@ -96,6 +96,7 @@ face_detector.tflite    Local MediaPipe face-detection model
 final_test.py           Optional Playwright end-to-end smoke test
 requirements.txt        Python dependencies
 requirements-dev.txt    Optional end-to-end test dependencies
+packages.txt            Linux libraries for Streamlit Community Cloud
 .streamlit/config.toml  Hosted application configuration
 utils/imaging.py        Cropping, background replacement, and sheet layout
 utils/cv_checks.py      Deterministic passport-photo quality checks
