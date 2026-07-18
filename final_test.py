@@ -29,6 +29,12 @@ PHOTO = Path(PHOTO_ENV).expanduser() if PHOTO_ENV else None
 URL = os.environ.get("PASSPORT_TEST_URL", "http://localhost:8501")
 PORT = int(os.environ.get("PASSPORT_TEST_PORT", urlparse(URL).port or 8501))
 HEALTH_URL = f"{URL}/_stcore/health"
+IS_REMOTE_URL = urlparse(URL).hostname not in {"localhost", "127.0.0.1", "::1"}
+UPLOAD_ONLY = os.environ.get("PASSPORT_TEST_UPLOAD_ONLY", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 ARTIFACT_DIR = ROOT / "output" / "playwright"
 
 
@@ -124,11 +130,31 @@ def wait_for_server(process: subprocess.Popen, timeout: float = 45.0) -> None:
 
 def server_is_healthy() -> bool:
     """Return True when an existing Streamlit server is already ready."""
+    # Streamlit Community Cloud redirects its internal health endpoint. The
+    # browser navigation below is the authoritative readiness check for an
+    # explicitly supplied remote URL, and must not cause a local server launch.
+    if IS_REMOTE_URL:
+        return True
     try:
         with urllib.request.urlopen(HEALTH_URL, timeout=1.0) as response:
             return response.status == 200
     except Exception:
         return False
+
+
+def streamlit_app_context(page):
+    """Return the page locally or Streamlit Cloud's embedded app frame."""
+    if not IS_REMOTE_URL:
+        return page
+
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        for frame in page.frames:
+            if "/~/+/" in frame.url:
+                return frame
+        page.wait_for_timeout(250)
+
+    raise RuntimeError("Streamlit Cloud app frame did not become available")
 
 
 def main() -> int:
@@ -173,32 +199,48 @@ def main() -> int:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1366, "height": 900})
             page.goto(URL, wait_until="networkidle", timeout=30_000)
-            page.get_by_text("Passport Photo Grid Generator").wait_for(timeout=15_000)
+            app = streamlit_app_context(page)
+            app.get_by_text("Passport Photo Grid Generator").wait_for(timeout=15_000)
 
-            file_input = page.locator("input[type=file]")
+            file_input = app.locator("input[type=file]")
             file_input.set_input_files(str(PHOTO))
-            page.get_by_text("Total photos requested").wait_for(timeout=20_000)
-            page.get_by_text("Edit Crop and Photo").wait_for(timeout=30_000)
-            page.get_by_text("Edited crop preview used for generation").wait_for(
+            app.get_by_text("Total photos requested").wait_for(timeout=20_000)
+            app.get_by_text("Edit Crop and Photo").wait_for(timeout=30_000)
+            app.get_by_text("Edited crop preview used for generation").wait_for(
                 timeout=60_000
             )
-            page.get_by_text("Drag crop box + sliders", exact=True).click()
-            page.get_by_text("Drag the crop box").wait_for(timeout=60_000)
 
-            zoom_slider = page.get_by_role("slider").first
+            if UPLOAD_ONLY:
+                text = app.locator("body").inner_text(timeout=10_000)
+                if "libGLESv2.so.2" in text or "Traceback" in text:
+                    raise RuntimeError("upload triggered a native-library traceback")
+
+                screenshot = ARTIFACT_DIR / "streamlit_upload_only.png"
+                page.screenshot(path=str(screenshot), full_page=True)
+                print(f"photo={PHOTO}", flush=True)
+                print("upload_processed=True", flush=True)
+                print("editor_visible=True", flush=True)
+                print(f"screenshot={screenshot}", flush=True)
+                browser.close()
+                return 0
+
+            app.get_by_text("Drag crop box + sliders", exact=True).click()
+            app.get_by_text("Drag the crop box").wait_for(timeout=60_000)
+
+            zoom_slider = app.get_by_role("slider").first
             zoom_slider.wait_for(timeout=20_000)
             zoom_slider.press("ArrowRight")
             page.wait_for_timeout(750)
 
-            page.get_by_role("button", name="Generate Print Sheets").click()
-            page.get_by_text("Generated").wait_for(timeout=120_000)
-            page.get_by_role("button", name="Download Page 1 (JPEG)").wait_for(
+            app.get_by_role("button", name="Generate Print Sheets").click()
+            app.get_by_text("Generated").wait_for(timeout=120_000)
+            app.get_by_role("button", name="Download Page 1 (JPEG)").wait_for(
                 timeout=30_000
             )
 
             download_path = ARTIFACT_DIR / "streamlit_e2e_page1.jpg"
             with page.expect_download(timeout=30_000) as download_info:
-                page.get_by_role("button", name="Download Page 1 (JPEG)").click()
+                app.get_by_role("button", name="Download Page 1 (JPEG)").click()
             download = download_info.value
             download.save_as(str(download_path))
             lower_pixels = validate_downloaded_sheet(download_path, PHOTO)
@@ -206,7 +248,7 @@ def main() -> int:
             screenshot = ARTIFACT_DIR / "streamlit_e2e.png"
             page.screenshot(path=str(screenshot), full_page=True)
 
-            text = page.locator("body").inner_text(timeout=10_000)
+            text = app.locator("body").inner_text(timeout=10_000)
             print(f"photo={PHOTO}", flush=True)
             print("rendered_title=True", flush=True)
             print("editor_visible=True", flush=True)
