@@ -35,6 +35,7 @@ UPLOAD_ONLY = os.environ.get("PASSPORT_TEST_UPLOAD_ONLY", "").lower() in {
     "true",
     "yes",
 }
+GENERATION_TIMEOUT_MS = int(os.environ.get("PASSPORT_TEST_GENERATION_TIMEOUT_MS", "120000"))
 ARTIFACT_DIR = ROOT / "output" / "playwright"
 
 
@@ -233,7 +234,18 @@ def main() -> int:
             page.wait_for_timeout(750)
 
             app.get_by_role("button", name="Generate Print Sheets").click()
-            app.get_by_text("Generated").wait_for(timeout=120_000)
+            try:
+                app.get_by_text("Generated").wait_for(timeout=GENERATION_TIMEOUT_MS)
+            except PlaywrightTimeoutError:
+                body = app.locator("body").inner_text(timeout=5_000)
+                print(
+                    f"generation_body_excerpt={body[-2000:].encode('ascii', 'replace').decode()}",
+                    flush=True,
+                )
+                failure_screenshot = ARTIFACT_DIR / "streamlit_e2e_failure.png"
+                page.screenshot(path=str(failure_screenshot), full_page=True)
+                print(f"failure_screenshot={failure_screenshot}", flush=True)
+                raise
             app.get_by_role("button", name="Download Page 1 (JPEG)").wait_for(
                 timeout=30_000
             )

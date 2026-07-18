@@ -502,7 +502,8 @@ if st.button("Generate Print Sheets", type="primary", disabled=not can_process):
                 )
             raw_bgr = pil_to_bgr(raw_pil)
 
-            if fname in st.session_state.edited_crop_bytes:
+            manual_crop_used = fname in st.session_state.edited_crop_bytes
+            if manual_crop_used:
                 crop_pil = png_bytes_to_image(st.session_state.edited_crop_bytes[fname])
             else:
                 crop_pil = auto_crop_pil(raw_pil, psp_w_mm, psp_h_mm)
@@ -527,7 +528,9 @@ if st.button("Generate Print Sheets", type="primary", disabled=not can_process):
                 psp_h_mm,
                 background_color=bg_color,
                 max_attempts=3,
-                allow_recrop=True,
+                allow_recrop=not manual_crop_used,
+                enforce_face_centering=not manual_crop_used,
+                enforce_head_ratio=not manual_crop_used,
             )
 
             if not verification.passed:

@@ -125,6 +125,8 @@ def verify_passport_photo(
     max_attempts: int = 3,
     head_ratio: float = 0.75,
     allow_recrop: bool = True,
+    enforce_face_centering: bool = True,
+    enforce_head_ratio: bool = True,
 ) -> tuple[np.ndarray, VerificationResult]:
     """Run deterministic verification with up to max_attempts corrections."""
     current = processed_img[:, :, :3].copy()
@@ -133,17 +135,17 @@ def verify_passport_photo(
     bg_bgr = _rgb_to_bgr(background_color)
 
     for attempt in range(1, max_attempts + 1):
-        center_ok = check_face_centering(current)
+        center_ok = not enforce_face_centering or check_face_centering(current)
         bg_ok = check_background_purity(current, pure_color=bg_bgr)
         ratio_value = measure_head_ratio(current)
-        ratio_ok = abs(ratio_value - head_ratio) <= 0.06
+        ratio_ok = not enforce_head_ratio or abs(ratio_value - head_ratio) <= 0.06
 
         errors: list[str] = []
-        if not center_ok:
+        if enforce_face_centering and not center_ok:
             errors.append(f"attempt {attempt}: face centering failed")
         if not bg_ok:
             errors.append(f"attempt {attempt}: background purity failed")
-        if not ratio_ok:
+        if enforce_head_ratio and not ratio_ok:
             errors.append(
                 f"attempt {attempt}: head ratio failed "
                 f"({ratio_value:.3f}, target {head_ratio:.3f})"
@@ -164,7 +166,14 @@ def verify_passport_photo(
             eroded = cv2.erode(mask, kernel, iterations=1)
             current = apply_alpha_to_background(current, eroded, background_color)
 
-        if allow_recrop and (not center_ok or not ratio_ok) and attempt < max_attempts:
+        if (
+            allow_recrop
+            and (
+                (enforce_face_centering and not center_ok)
+                or (enforce_head_ratio and not ratio_ok)
+            )
+            and attempt < max_attempts
+        ):
             if ratio_value > head_ratio:
                 crop_scale *= 1.05
             elif ratio_value > 0:
@@ -184,9 +193,15 @@ def verify_passport_photo(
 
     return current, VerificationResult(
         passed=False,
-        centering_ok=check_face_centering(current),
+        centering_ok=(
+            True if not enforce_face_centering else check_face_centering(current)
+        ),
         background_purity_ok=check_background_purity(current, pure_color=bg_bgr),
-        head_ratio_ok=check_head_ratio(current, target_ratio=head_ratio),
+        head_ratio_ok=(
+            True
+            if not enforce_head_ratio
+            else check_head_ratio(current, target_ratio=head_ratio)
+        ),
         errors=last_errors or ["All verification attempts exhausted."],
     )
 

@@ -527,7 +527,21 @@ def _alpha_quality_report(alpha: np.ndarray, source_bgr: np.ndarray) -> tuple[bo
     if len(small_areas) >= 12 and small_ratio > 0.035:
         return False, f"too many small alpha fragments ({len(small_areas)})"
 
-    source_foreground = _border_background_mask(source_bgr) < 128
+    source_background_mask = _border_background_mask(source_bgr)
+    reliable_background = cv2.erode(
+        source_background_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    ) > 128
+    strong_support = alpha.astype(np.uint8) > 128
+    leaked_background = np.logical_and(strong_support, reliable_background)
+    leak_pixels = int(np.sum(leaked_background))
+    leak_ratio = float(leak_pixels / max(1, np.sum(strong_support)))
+    minimum_leak_pixels = max(40, int(h * w * 0.005))
+    if leak_pixels >= minimum_leak_pixels and leak_ratio > 0.06:
+        return False, f"background leakage too high ({leak_ratio:.2%})"
+
+    source_foreground = source_background_mask < 128
     center_margin = max(1, int(w * 0.08))
     source_foreground[:, :center_margin] = False
     source_foreground[:, w - center_margin :] = False
@@ -562,7 +576,6 @@ def _alpha_quality_report(alpha: np.ndarray, source_bgr: np.ndarray) -> tuple[bo
     colorful_lower[:, w - center_margin :] = False
     colorful_ratio = float(np.mean(colorful_lower))
     if colorful_ratio > 0.035:
-        strong_support = alpha.astype(np.uint8) > 128
         colorful_retained = np.logical_and(strong_support[lower_start:, :], colorful_lower)
         colorful_retention = float(
             np.sum(colorful_retained) / max(1, np.sum(colorful_lower))
