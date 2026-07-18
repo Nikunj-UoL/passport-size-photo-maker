@@ -18,9 +18,16 @@ def manifest_entries(filename: str) -> list[str]:
 
 
 class DeploymentManifestTests(unittest.TestCase):
-    def test_mediapipe_gles_runtime_is_installed(self) -> None:
-        """MediaPipe's Linux shared library needs libGLESv2.so.2 on upload."""
-        self.assertIn("libgles2", manifest_entries("packages.txt"))
+    def test_mediapipe_gpu_runtimes_are_installed(self) -> None:
+        """MediaPipe's Linux shared library needs GLES and EGL on upload."""
+        packages = manifest_entries("packages.txt")
+        required_packages = {
+            "libGLESv2.so.2": "libgles2",
+            "libEGL.so.1": "libegl1",
+        }
+        for library, package in required_packages.items():
+            with self.subTest(library=library):
+                self.assertIn(package, packages)
 
     def test_only_one_opencv_distribution_is_declared(self) -> None:
         opencv_distributions = [
