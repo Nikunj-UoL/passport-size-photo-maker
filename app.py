@@ -527,11 +527,22 @@ if st.button("Generate Print Sheets", type="primary", disabled=not can_process):
                 psp_w_mm,
                 psp_h_mm,
                 background_color=bg_color,
-                max_attempts=3,
+                max_attempts=1 if manual_crop_used else 3,
                 allow_recrop=not manual_crop_used,
-                enforce_face_centering=not manual_crop_used,
-                enforce_head_ratio=not manual_crop_used,
             )
+
+            if manual_crop_used:
+                # The user has approved this geometry. Keep the helper call
+                # compatible with an older module during Streamlit hot reloads,
+                # but never waive the background-purity requirement.
+                verification.centering_ok = True
+                verification.head_ratio_ok = True
+                verification.passed = verification.background_purity_ok
+                verification.errors = (
+                    []
+                    if verification.background_purity_ok
+                    else ["attempt 1: background purity failed"]
+                )
 
             if not verification.passed:
                 errors.append(
